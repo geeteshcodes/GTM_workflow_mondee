@@ -9,12 +9,20 @@ For each partner discovered in Stage 1, attempt to fill in any missing contact
 fields (phone_number, email_id, linkedin_profile) using a strict prioritised
 fallback chain:
 
-    Priority 1 — Partners DB data (already in discovered_partners dict)
-                 If the field is non-null and non-empty, use it directly.
-    Priority 2 — Internal Database API  (enrichment_sources/database_query.py)
-    Priority 3 — Hunter.io              (enrichment_sources/hunter.py)
-    Priority 4 — Apollo.io             (enrichment_sources/apollo.py)
-    Priority 5 — LinkedIn Sales Nav    (enrichment_sources/linkedin_sales_nav.py)
+    Priority 1   — Partners DB data (already in discovered_partners dict)
+                   If the field is non-null and non-empty, use it directly.
+    Priority 2   — Internal Database API  (enrichment_sources/database_query.py)
+    Priority 2.3 — LinkedIn URL Finder    (enrichment_sources/linkedin_url_finder.py)
+                   Tavily web search: ``"<name>" <category> <region> site:linkedin.com/company``
+                   Resolves the company's LinkedIn page URL so Priority 2.5 can work
+                   even when the DB has no ``company_linkedin_url`` column value.
+    Priority 2.5 — LinkedIn Employee Scrape (enrichment_sources/linkedin_company_employees.py)
+                   Scrapes the company LinkedIn page, filters for senior staff
+                   (VP, Director, C-suite, etc.) and returns a real person's
+                   profile URL — far better than a support@ inbox.
+    Priority 3   — Hunter.io              (enrichment_sources/hunter.py)
+    Priority 4   — Apollo.io              (enrichment_sources/apollo.py)
+    Priority 5   — LinkedIn Sales Nav     (enrichment_sources/linkedin_sales_nav.py)
 
 Rules
 -----
@@ -42,7 +50,9 @@ from typing import Any
 from enrichment_sources.apollo import query_apollo
 from enrichment_sources.database_query import query_database
 from enrichment_sources.hunter import query_hunter
+from enrichment_sources.linkedin_company_employees import query_linkedin_employees
 from enrichment_sources.linkedin_sales_nav import query_linkedin
+from enrichment_sources.linkedin_url_finder import find_company_linkedin_url
 from state import GraphState
 
 logger = logging.getLogger(__name__)
@@ -52,6 +62,10 @@ logger = logging.getLogger(__name__)
 # the fallback chain logic below is field-agnostic.
 # ---------------------------------------------------------------------------
 ENRICHABLE_FIELDS = ("phone_number", "email_id", "linkedin_profile")
+
+# Extra fields written by the LinkedIn employee scraper (not standard enrichment
+# targets, but stored on the partner record for outreach personalisation).
+_LINKEDIN_BONUS_FIELDS = ("contact_name", "contact_headline")
 
 
 def _is_present(value: Any) -> bool:
@@ -99,12 +113,49 @@ async def _enrich_one_partner(partner: dict) -> dict:
     )
 
     # ------------------------------------------------------------------
-    # Priority 2–5: call external sources concurrently, then walk results
-    # in priority order per field.
+    # Priority 2–5: resolve company_linkedin_url first (sequential pre-step),
+    # then fire all remaining sources concurrently.
     # ------------------------------------------------------------------
+
+    # Step A — Resolve company LinkedIn page URL (Priority 2.3)
+    # We do this sequentially BEFORE the main gather because its result
+    # directly feeds into the employee scraper (Priority 2.5).
+    company_linkedin_url: str = partner.get("company_linkedin_url") or ""
+
+    if not company_linkedin_url:
+        try:
+            url_result = await find_company_linkedin_url(
+                partner_name=business_name,
+                category=partner.get("category", "") or "",
+                region=partner.get("region", "") or "",
+                website=partner.get("website", "") or "",
+            )
+            company_linkedin_url = url_result.get("company_linkedin_url", "")
+            if company_linkedin_url:
+                enriched["company_linkedin_url"] = company_linkedin_url
+                logger.info(
+                    "Partner %r: company LinkedIn URL resolved via Tavily: %s",
+                    business_name,
+                    company_linkedin_url,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Partner %r: LinkedIn URL finder failed: %s — proceeding without it.",
+                business_name,
+                exc,
+            )
+
+    # Step B — Fire all remaining sources concurrently (Priority 2, 2.5, 3, 4, 5)
     try:
-        db_result, hunter_result, apollo_result, linkedin_result = await asyncio.gather(
+        (
+            db_result,
+            linkedin_emp_result,
+            hunter_result,
+            apollo_result,
+            linkedin_result,
+        ) = await asyncio.gather(
             query_database(business_name, detail),
+            query_linkedin_employees(business_name, company_linkedin_url),
             query_hunter(business_name),
             query_apollo(business_name),
             query_linkedin(business_name),
@@ -112,15 +163,16 @@ async def _enrich_one_partner(partner: dict) -> dict:
         )
     except Exception as exc:
         logger.error("Unexpected error during gather for %r: %s", business_name, exc)
-        db_result = hunter_result = apollo_result = linkedin_result = {}
+        db_result = linkedin_emp_result = hunter_result = apollo_result = linkedin_result = {}
 
     # Convert any exceptions returned by gather into empty dicts
     source_results = []
     for name, result in [
-        ("database", db_result),
-        ("hunter", hunter_result),
-        ("apollo", apollo_result),
-        ("linkedin", linkedin_result),
+        ("database",         db_result),
+        ("linkedin_emp",     linkedin_emp_result),
+        ("hunter",           hunter_result),
+        ("apollo",           apollo_result),
+        ("linkedin",         linkedin_result),
     ]:
         if isinstance(result, Exception):
             logger.warning(
@@ -133,16 +185,28 @@ async def _enrich_one_partner(partner: dict) -> dict:
         else:
             source_results.append(result or {})
 
-    db_res, hunter_res, apollo_res, linkedin_res = source_results
+    db_res, linkedin_emp_res, hunter_res, apollo_res, linkedin_res = source_results
+
+    # ------------------------------------------------------------------
+    # Bonus: store contact_name / contact_headline from LinkedIn scrape
+    # These are metadata fields, not standard ENRICHABLE_FIELDS, so we
+    # write them directly without going through the fallback loop.
+    # ------------------------------------------------------------------
+    for bonus_field in _LINKEDIN_BONUS_FIELDS:
+        if _is_present(linkedin_emp_res.get(bonus_field)) and not _is_present(
+            enriched.get(bonus_field)
+        ):
+            enriched[bonus_field] = linkedin_emp_res[bonus_field]
 
     # Walk fallback chain per field
     for field in fields_needed:
         resolved_value = None
         for source_name, source_data in [
-            ("database", db_res),
-            ("hunter", hunter_res),
-            ("apollo", apollo_res),
-            ("linkedin", linkedin_res),
+            ("database",     db_res),
+            ("linkedin_emp", linkedin_emp_res),  # Priority 2.5 — real named contact
+            ("hunter",       hunter_res),
+            ("apollo",       apollo_res),
+            ("linkedin",     linkedin_res),
         ]:
             candidate = source_data.get(field)
             if _is_present(candidate):
