@@ -17,10 +17,19 @@ Input  (GraphState field): enriched_partners: list[dict]
 Output (GraphState field): TBD by the outreach team — likely outreach_results: list[dict]
 """
 
+import logging
 from state import GraphState
+
+logger = logging.getLogger(__name__)
 
 
 async def outreach_node(state: GraphState) -> dict:
+    run_id = state.get("run_id", "")
+    prefix = f"[{run_id}] " if run_id else ""
+    
+    enriched = state.get("enriched_partners", [])
+    logger.info("%sOutreach node: processing %d enriched partners (stub).", prefix, len(enriched))
+
     # TODO: outreach logic goes here.
     # Implement partner outreach using the enriched contact details in
     # state["enriched_partners"].  Each dict has keys:
@@ -29,4 +38,4 @@ async def outreach_node(state: GraphState) -> dict:
     #
     # Expected output: return a partial state dict, e.g.:
     #   {"outreach_results": [...]}
-    pass
+    return {"outreach_results": []}

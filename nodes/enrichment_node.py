@@ -45,6 +45,8 @@ To add a new enrichment source:
 
 import asyncio
 import logging
+import os
+import time
 from typing import Any
 
 from enrichment_sources.apollo import query_apollo
@@ -56,6 +58,26 @@ from enrichment_sources.linkedin_url_finder import find_company_linkedin_url
 from state import GraphState
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Concurrency cap — limits how many partners are enriched simultaneously.
+# Set via env var ENRICH_CONCURRENCY (default 10).
+# Raising this speeds things up but uses more API quota & DB connections.
+# ---------------------------------------------------------------------------
+_ENRICH_CONCURRENCY: int = int(os.getenv("ENRICH_CONCURRENCY", "10"))
+_enrich_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    """Return (or lazily create) the module-level enrichment semaphore."""
+    global _enrich_semaphore
+    if _enrich_semaphore is None:
+        _enrich_semaphore = asyncio.Semaphore(_ENRICH_CONCURRENCY)
+        logger.info(
+            "Enrichment semaphore initialised: max %d concurrent partners.",
+            _ENRICH_CONCURRENCY,
+        )
+    return _enrich_semaphore
 
 # ---------------------------------------------------------------------------
 # Fields we attempt to enrich.  Order matters for logging clarity only;
@@ -75,14 +97,18 @@ def _is_present(value: Any) -> bool:
     return str(value).strip() != ""
 
 
-async def _enrich_one_partner(partner: dict) -> dict:
+async def _enrich_one_partner(partner: dict, run_id: str = "") -> dict:
     """
     Run the fallback chain for a single partner and return the enriched dict.
+    Acquires the module-level semaphore so at most ENRICH_CONCURRENCY partners
+    are processed simultaneously — essential for large partner lists.
 
     Parameters
     ----------
     partner : dict
         A single record from discovered_partners.
+    run_id : str
+        Optional pipeline run ID for log correlation.
 
     Returns
     -------
@@ -90,6 +116,7 @@ async def _enrich_one_partner(partner: dict) -> dict:
         Same dict with phone_number / email_id / linkedin_profile filled in
         where possible.  Unresolved fields are set to None.
     """
+    prefix = f"[{run_id}] " if run_id else ""
     enriched = dict(partner)
 
     business_name: str = partner.get("partner_name", "") or ""
@@ -103,14 +130,29 @@ async def _enrich_one_partner(partner: dict) -> dict:
     fields_needed = [f for f in ENRICHABLE_FIELDS if not _is_present(partner.get(f))]
 
     if not fields_needed:
-        logger.debug("Partner %r: all fields already present in DB.", business_name)
+        logger.info("%sPartner %r: all fields already present — skipping enrichment.", prefix, business_name)
         return enriched
 
-    logger.debug(
-        "Partner %r: missing fields %s — starting external enrichment.",
-        business_name,
-        fields_needed,
+    logger.info(
+        "%sPartner %r: needs enrichment for fields %s.",
+        prefix, business_name, fields_needed,
     )
+
+    async with _get_semaphore():
+        await _enrich_one_partner_inner(enriched, partner, business_name, detail, fields_needed, prefix)
+    return enriched
+
+
+async def _enrich_one_partner_inner(
+    enriched: dict,
+    partner: dict,
+    business_name: str,
+    detail: str,
+    fields_needed: list,
+    prefix: str,
+) -> None:
+    """Inner enrichment logic — runs inside the semaphore."""
+    t0 = time.monotonic()
 
     # ------------------------------------------------------------------
     # Priority 2–5: resolve company_linkedin_url first (sequential pre-step),
@@ -118,12 +160,11 @@ async def _enrich_one_partner(partner: dict) -> dict:
     # ------------------------------------------------------------------
 
     # Step A — Resolve company LinkedIn page URL (Priority 2.3)
-    # We do this sequentially BEFORE the main gather because its result
-    # directly feeds into the employee scraper (Priority 2.5).
     company_linkedin_url: str = partner.get("company_linkedin_url") or ""
 
     if not company_linkedin_url:
         try:
+            logger.info("%s  → [%s] Searching LinkedIn URL via Tavily…", prefix, business_name)
             url_result = await find_company_linkedin_url(
                 partner_name=business_name,
                 category=partner.get("category", "") or "",
@@ -134,18 +175,22 @@ async def _enrich_one_partner(partner: dict) -> dict:
             if company_linkedin_url:
                 enriched["company_linkedin_url"] = company_linkedin_url
                 logger.info(
-                    "Partner %r: company LinkedIn URL resolved via Tavily: %s",
-                    business_name,
-                    company_linkedin_url,
+                    "%s  → [%s] LinkedIn URL found: %s",
+                    prefix, business_name, company_linkedin_url,
                 )
+            else:
+                logger.info("%s  → [%s] LinkedIn URL not found via Tavily.", prefix, business_name)
         except Exception as exc:
             logger.warning(
-                "Partner %r: LinkedIn URL finder failed: %s — proceeding without it.",
-                business_name,
-                exc,
+                "%s  → [%s] LinkedIn URL finder failed: %s",
+                prefix, business_name, exc,
             )
 
     # Step B — Fire all remaining sources concurrently (Priority 2, 2.5, 3, 4, 5)
+    logger.info(
+        "%s  → [%s] Querying sources: database, linkedin_employees, hunter, apollo, linkedin_sales_nav…",
+        prefix, business_name,
+    )
     try:
         (
             db_result,
@@ -199,6 +244,7 @@ async def _enrich_one_partner(partner: dict) -> dict:
             enriched[bonus_field] = linkedin_emp_res[bonus_field]
 
     # Walk fallback chain per field
+    resolved_fields = {}
     for field in fields_needed:
         resolved_value = None
         for source_name, source_data in [
@@ -212,26 +258,31 @@ async def _enrich_one_partner(partner: dict) -> dict:
             if _is_present(candidate):
                 enriched[field] = candidate
                 resolved_value = candidate
-                logger.debug(
-                    "Partner %r: field %r resolved from source %r.",
-                    business_name,
-                    field,
-                    source_name,
-                )
+                resolved_fields[field] = source_name
                 break
 
         if resolved_value is None:
             enriched[field] = None  # explicit None — all sources exhausted
-            logger.debug(
-                "Partner %r: field %r unresolved after all sources.", business_name, field
-            )
 
-    return enriched
+    elapsed = time.monotonic() - t0
+    if resolved_fields:
+        logger.info(
+            "%s  ✓ [%s] Enriched in %.1fs — %s",
+            prefix, business_name, elapsed,
+            ", ".join(f"{k} via {v}" for k, v in resolved_fields.items()),
+        )
+    else:
+        logger.info(
+            "%s  ✗ [%s] No new data found in %.1fs (all sources empty).",
+            prefix, business_name, elapsed,
+        )
 
 
 async def enrichment_node(state: GraphState) -> dict:
     """
     LangGraph node: enrich all discovered partners concurrently.
+    At most ENRICH_CONCURRENCY (default 10) partners are processed
+    simultaneously — controlled by the module-level semaphore.
 
     Parameters
     ----------
@@ -244,19 +295,34 @@ async def enrichment_node(state: GraphState) -> dict:
         Partial state update: {"enriched_partners": list[dict]}
     """
     discovered = state.get("discovered_partners", [])
+    run_id: str = state.get("run_id", "")
 
     if not discovered:
-        logger.warning("Enrichment node: no discovered partners to enrich.")
+        logger.warning("[%s] Enrichment node: no discovered partners to enrich.", run_id)
         return {"enriched_partners": []}
 
-    logger.info("Enrichment node: enriching %d partners.", len(discovered))
+    total = len(discovered)
+    logger.info(
+        "[%s] Enrichment node: starting %d partners (concurrency cap: %d).",
+        run_id, total, _ENRICH_CONCURRENCY,
+    )
+    t_start = time.monotonic()
 
-    # Process all partners concurrently
+    # Schedule all partners; semaphore inside _enrich_one_partner limits
+    # actual concurrency to _ENRICH_CONCURRENCY at any moment.
     enriched_partners = await asyncio.gather(
-        *[_enrich_one_partner(partner) for partner in discovered],
+        *[_enrich_one_partner(partner, run_id=run_id) for partner in discovered],
         return_exceptions=False,
     )
 
-    logger.info("Enrichment node: completed enrichment for %d partners.", len(enriched_partners))
+    elapsed = time.monotonic() - t_start
+    filled = sum(
+        1 for p in enriched_partners
+        if any(p.get(f) for f in ("phone_number", "email_id", "linkedin_profile"))
+    )
+    logger.info(
+        "[%s] Enrichment node: finished %d partners in %.1fs — %d/%d had contact data filled.",
+        run_id, total, elapsed, filled, total,
+    )
 
     return {"enriched_partners": list(enriched_partners)}

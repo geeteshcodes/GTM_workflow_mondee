@@ -67,10 +67,13 @@ async def discovery_node(state: GraphState) -> dict:
         Partial state update: {"discovered_partners": list[dict]}
     """
     input_category = state["input_category"].strip()
+    run_id = state.get("run_id", "")
+    prefix = f"[{run_id}] " if run_id else ""
     like_pattern = f"%{input_category}%"
 
     logger.info(
-        "Discovery node: searching for subcategory=%r, status=%r",
+        "%sDiscovery node: searching for subcategory=%r, status=%r",
+        prefix,
         input_category,
         STATUS_TO_ENRICH,
     )
@@ -81,6 +84,6 @@ async def discovery_node(state: GraphState) -> dict:
 
     discovered = [dict(row) for row in rows]
 
-    logger.info("Discovery node: found %d partners.", len(discovered))
+    logger.info("%sDiscovery node: found %d partners.", prefix, len(discovered))
 
     return {"discovered_partners": discovered}

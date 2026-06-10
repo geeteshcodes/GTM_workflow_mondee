@@ -1,0 +1,32 @@
+# GTM UAE Pipeline — Backend API Requirements
+# Install into conda env 'backend':
+#   conda activate backend
+#   pip install -r backend/requirements.txt
+
+# ── FastAPI + ASGI server ────────────────────────────────────────────────────
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+
+# ── Server-Sent Events streaming ─────────────────────────────────────────────
+sse-starlette>=2.1.0
+
+# ── CORS + environment ───────────────────────────────────────────────────────
+python-dotenv>=1.0.0
+
+# ── Core agentic framework ───────────────────────────────────────────────────
+langgraph>=0.2.0
+langchain-core>=0.2.0
+
+# ── PostgreSQL (async driver + connection pooling) ───────────────────────────
+asyncpg>=0.29.0
+
+# ── Data processing ──────────────────────────────────────────────────────────
+pandas>=2.0.0
+openpyxl>=3.1.0
+
+# ── HTTP client (for enrichment API calls) ───────────────────────────────────
+httpx>=0.27.0
+
+# ── Search (for LinkedIn URL discovery) ─────────────────────────────────────
+tavily-python>=0.3.0

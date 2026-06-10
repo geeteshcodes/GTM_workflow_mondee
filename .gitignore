@@ -2,6 +2,13 @@
 
 # ── Environment / secrets ─────────────────────────────────────────────────────
 .env
+.env.local
+.env*.local
+
+# ── Frontend (Next.js) ───────────────────────────────────────────────────────
+frontend/.next/
+frontend/node_modules/
+node_modules/
 
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
@@ -40,3 +47,6 @@ logs/
 .pytest_cache/
 .coverage
 htmlcov/
+
+GTM_UAE_Solution_Documentation.md
+GTM UAE_ Track 1 & 2 Db.xlsx

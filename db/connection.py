@@ -44,7 +44,7 @@ async def init_pool() -> asyncpg.Pool:
             user=os.getenv("DB_USER", "postgres"),
             password=os.getenv("DB_PASSWORD", ""),
             min_size=1,
-            max_size=5,
+            max_size=int(os.getenv("DB_POOL_MAX_SIZE", "20")),
         )
     return _pool
 
