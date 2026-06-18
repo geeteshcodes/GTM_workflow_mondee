@@ -48,10 +48,16 @@ except ImportError:
 # Schemas
 # ---------------------------------------------------------------------------
 
+class TestOverride(BaseModel):
+    phone_number:     str = ""
+    email_id:         str = ""
+    linkedin_profile: str = ""
+
 class OutreachLaunchRequest(BaseModel):
-    partner_name: str
-    channels: list[str] = ["whatsapp", "email"]
+    partner_name:   str
+    channels:       list[str] = ["whatsapp", "email"]
     custom_message: str = ""
+    test_override:  TestOverride = TestOverride()
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +170,22 @@ async def launch_outreach(req: OutreachLaunchRequest):
         )
 
     partner = dict(row) if row else {"partner_name": req.partner_name}
+
+    # ── Test override: merge contact fields from the UI test row ──────────
+    # Lets the test row send to a custom number/email/linkedin
+    # without touching the real partner record in the DB.
+    ov = req.test_override
+    if ov.phone_number:
+        partner["phone_number"]    = ov.phone_number
+    if ov.email_id:
+        partner["email_id"]        = ov.email_id
+    if ov.linkedin_profile:
+        partner["linkedin_profile"] = ov.linkedin_profile
+    if any([ov.phone_number, ov.email_id, ov.linkedin_profile]):
+        logger.info(
+            "Outreach launch: test override active — phone=%s email=%s linkedin=%s",
+            bool(ov.phone_number), bool(ov.email_id), bool(ov.linkedin_profile),
+        )
 
     logger.info(
         "Outreach launch: partner=%r channels=%s workflow_available=%s",

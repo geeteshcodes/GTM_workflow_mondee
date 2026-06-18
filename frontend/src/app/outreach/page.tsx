@@ -2,7 +2,8 @@
 import { useState, useEffect, useRef } from "react";
 import {
   Send, MessageSquare, Mail, Link2, Zap, CheckCircle2,
-  Clock, XCircle, Loader2, X, RefreshCw,
+  Clock, XCircle, Loader2, X, RefreshCw, Phone,
+  TrendingUp, TrendingDown, Minus, FileText, ChevronDown, ChevronUp,
 } from "lucide-react";
 import { FaInstagram } from "react-icons/fa";
 import { toast } from "sonner";
@@ -30,6 +31,222 @@ interface OutreachLead {
 
 interface ChannelStat { channel: string; count: number; }
 
+interface ChannelResult {
+  channel: string;
+  result: {
+    status: string;
+    note?: string;
+    sid?: string;
+    to?: string;
+    summary?: {
+      outcome?: string;
+      sentiment?: string;
+      key_points?: string[];
+      action_items?: string[];
+      notable_quotes?: string[];
+    } | null;
+    duration_s?: number;
+    call_sid?: string;
+  };
+}
+
+interface OutreachResult {
+  lead_name: string;
+  results: ChannelResult[];
+}
+
+// ─────────────────────────────────────────────────────────────────
+// SENTIMENT BADGE
+// ─────────────────────────────────────────────────────────────────
+
+function SentimentBadge({ sentiment }: { sentiment: string }) {
+  const s = sentiment?.toLowerCase() ?? "";
+  if (s.includes("positive"))
+    return <span className="flex items-center gap-1 text-emerald-400 text-xs font-bold"><TrendingUp size={12} /> Positive</span>;
+  if (s.includes("negative"))
+    return <span className="flex items-center gap-1 text-red-400 text-xs font-bold"><TrendingDown size={12} /> Negative</span>;
+  return <span className="flex items-center gap-1 text-amber-400 text-xs font-bold"><Minus size={12} /> Neutral</span>;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// OUTREACH RESULT PANEL
+// ─────────────────────────────────────────────────────────────────
+
+function OutreachResultPanel({ result, onClose }: { result: OutreachResult; onClose: () => void }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const statusColor = (status: string) => {
+    const s = status?.toLowerCase() ?? "";
+    if (s === "sent" || s === "completed") return "text-emerald-400";
+    if (s === "skipped" || s === "not_implemented") return "text-amber-400";
+    return "text-red-400";
+  };
+
+  const statusIcon = (status: string) => {
+    const s = status?.toLowerCase() ?? "";
+    if (s === "sent" || s === "completed") return <CheckCircle2 size={14} className="text-emerald-400" />;
+    if (s === "skipped" || s === "not_implemented") return <Clock size={14} className="text-amber-400" />;
+    return <XCircle size={14} className="text-red-400" />;
+  };
+
+  const channelIcon = (ch: string) => {
+    const m: Record<string, React.ReactNode> = {
+      whatsapp: <MessageSquare size={14} className="text-emerald-400" />,
+      email:    <Mail size={14} className="text-amber-400" />,
+      linkedin: <Link2 size={14} className="text-blue-400" />,
+      voice:    <Phone size={14} className="text-violet-400" />,
+    };
+    return m[ch] ?? <Send size={14} />;
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-150">
+      <div className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-lg mx-4 max-h-[85vh] overflow-y-auto animate-in zoom-in-95 duration-200">
+        {/* Header */}
+        <div className="flex items-center justify-between p-5 border-b border-border sticky top-0 bg-card z-10">
+          <div>
+            <h2 className="text-base font-bold flex items-center gap-2">
+              <CheckCircle2 size={16} className="text-emerald-400" /> Outreach Complete
+            </h2>
+            <p className="text-xs text-muted-foreground mt-0.5">{result.lead_name}</p>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground p-1 rounded-md hover:bg-muted transition-colors">
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Channel results */}
+        <div className="p-5 space-y-3">
+          {result.results.map((r) => {
+            const isVoice    = r.channel === "voice";
+            const summary    = r.result?.summary;
+            const hasDetail  = isVoice && summary;
+            const isExpanded = expanded === r.channel;
+
+            return (
+              <div key={r.channel} className="border border-border rounded-xl overflow-hidden">
+                {/* Channel row */}
+                <div className="flex items-center gap-3 p-3">
+                  {channelIcon(r.channel)}
+                  <span className="text-sm font-medium capitalize flex-1">{r.channel}</span>
+                  {statusIcon(r.result.status)}
+                  <span className={`text-xs font-bold ${statusColor(r.result.status)}`}>
+                    {r.result.status}
+                  </span>
+                  {hasDetail && (
+                    <button
+                      onClick={() => setExpanded(isExpanded ? null : r.channel)}
+                      className="ml-2 text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                    </button>
+                  )}
+                </div>
+
+                {/* Voice detail panel */}
+                {hasDetail && isExpanded && summary && (
+                  <div className="border-t border-border bg-background/50 p-4 space-y-4">
+
+                    {/* Sentiment */}
+                    {summary.sentiment && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground w-20">Sentiment</span>
+                        <SentimentBadge sentiment={summary.sentiment} />
+                        <span className="text-xs text-muted-foreground">
+                          — {summary.sentiment.split("—").slice(1).join("—").trim() || summary.sentiment}
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Outcome */}
+                    {summary.outcome && (
+                      <div>
+                        <span className="text-xs text-muted-foreground uppercase tracking-wider block mb-1">Outcome</span>
+                        <p className="text-sm text-foreground leading-relaxed">{summary.outcome}</p>
+                      </div>
+                    )}
+
+                    {/* Key points */}
+                    {summary.key_points && summary.key_points.length > 0 && (
+                      <div>
+                        <span className="text-xs text-muted-foreground uppercase tracking-wider block mb-1">Key Points</span>
+                        <ul className="space-y-1">
+                          {summary.key_points.map((p, i) => (
+                            <li key={i} className="text-xs flex gap-2">
+                              <span className="text-primary mt-0.5">•</span>
+                              <span>{p}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* Action items */}
+                    {summary.action_items && summary.action_items.length > 0 && (
+                      <div>
+                        <span className="text-xs text-muted-foreground uppercase tracking-wider block mb-1">Action Items</span>
+                        <ul className="space-y-1">
+                          {summary.action_items.map((a, i) => (
+                            <li key={i} className="text-xs flex gap-2">
+                              <span className="text-amber-400 mt-0.5">→</span>
+                              <span>{a}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* Notable quotes */}
+                    {summary.notable_quotes && summary.notable_quotes.length > 0 && (
+                      <div>
+                        <span className="text-xs text-muted-foreground uppercase tracking-wider block mb-1">Notable Quotes</span>
+                        {summary.notable_quotes.map((q, i) => (
+                          <p key={i} className="text-xs italic text-muted-foreground border-l-2 border-primary/40 pl-2 mb-1">"{q}"</p>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Duration */}
+                    {r.result.duration_s !== undefined && r.result.duration_s > 0 && (
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <Phone size={11} />
+                        <span>Call duration: {r.result.duration_s}s</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* No-call note */}
+                {isVoice && r.result.status === "skipped" && (
+                  <div className="border-t border-border bg-background/50 px-4 py-2 text-xs text-muted-foreground">
+                    {r.result.note || "No phone number — voice call skipped"}
+                  </div>
+                )}
+
+                {/* Non-voice note */}
+                {!isVoice && r.result.note && (
+                  <div className="border-t border-border bg-background/50 px-4 py-2 text-xs text-muted-foreground">
+                    {r.result.note}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="px-5 pb-5">
+          <button
+            onClick={onClose}
+            className="w-full py-2 rounded-lg border border-border text-sm hover:bg-muted transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────
 // CHANNEL CONFIG
 // ─────────────────────────────────────────────────────────────────
@@ -37,7 +254,7 @@ interface ChannelStat { channel: string; count: number; }
 const CHANNELS = [
   { id: "whatsapp", label: "WhatsApp",    description: "Send via Twilio",         icon: MessageSquare, color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/30", activeBg: "bg-emerald-500/20 border-emerald-400", field: "phone" },
   { id: "linkedin", label: "LinkedIn DM", description: "Send via Unipile",        icon: Link2,         color: "text-blue-400",   bg: "bg-blue-500/10 border-blue-500/30",       activeBg: "bg-blue-500/20 border-blue-400",       field: "linkedin_url" },
-  { id: "email",    label: "Email",       description: "Send via SendGrid",        icon: Mail,          color: "text-amber-400",  bg: "bg-amber-500/10 border-amber-500/30",     activeBg: "bg-amber-500/20 border-amber-400",     field: "email" },
+  { id: "email",    label: "Email",       description: "Send via Gmail SMTP",      icon: Mail,          color: "text-amber-400",  bg: "bg-amber-500/10 border-amber-500/30",     activeBg: "bg-amber-500/20 border-amber-400",     field: "email" },
   { id: "instagram",label: "Instagram",   description: "Auto-discover via Tavily", icon: FaInstagram,  color: "text-pink-400",   bg: "bg-pink-500/10 border-pink-500/30",       activeBg: "bg-pink-500/20 border-pink-400",       field: "instagram" },
 ] as const;
 
@@ -71,7 +288,6 @@ function ChannelModal({ lead, onClose, onLaunch, launching }: {
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-150"
     >
       <div className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-md mx-4 animate-in zoom-in-95 duration-200">
-        {/* Header */}
         <div className="flex items-center justify-between p-5 border-b border-border">
           <div>
             <h2 className="text-base font-bold flex items-center gap-2">
@@ -90,7 +306,6 @@ function ChannelModal({ lead, onClose, onLaunch, launching }: {
           </button>
         </div>
 
-        {/* Channels */}
         <div className="p-5 space-y-3">
           <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider mb-3">
             Select channels — messages sent in this order
@@ -125,7 +340,6 @@ function ChannelModal({ lead, onClose, onLaunch, launching }: {
           })}
         </div>
 
-        {/* Custom message */}
         <div className="px-5 pb-3">
           <label className="text-xs text-muted-foreground font-medium uppercase tracking-wider block mb-2">
             Custom message <span className="normal-case font-normal">(optional — leave blank to auto-generate)</span>
@@ -139,7 +353,6 @@ function ChannelModal({ lead, onClose, onLaunch, launching }: {
           />
         </div>
 
-        {/* Footer */}
         <div className="flex items-center justify-between p-5 pt-3 border-t border-border">
           <span className="text-xs text-muted-foreground">
             {selected.length === 0 ? "Select at least one channel" : `${selected.length} channel${selected.length > 1 ? "s" : ""} selected`}
@@ -167,14 +380,22 @@ function ChannelModal({ lead, onClose, onLaunch, launching }: {
 // ─────────────────────────────────────────────────────────────────
 
 export default function OutreachPage() {
-  const [leads,        setLeads]        = useState<OutreachLead[]>([]);
-  const [channels,     setChannels]     = useState<ChannelStat[]>([]);
-  const [loading,      setLoading]      = useState(true);
-  const [filter,       setFilter]       = useState("all");
-  const [modalOpen,    setModalOpen]    = useState(false);
-  const [selectedLead, setSelectedLead] = useState<OutreachLead | null>(null);
-  const [launching,    setLaunching]    = useState(false);
-  const [search,       setSearch]       = useState("");
+  const [leads,         setLeads]         = useState<OutreachLead[]>([]);
+  const [channels,      setChannels]      = useState<ChannelStat[]>([]);
+  const [loading,       setLoading]       = useState(true);
+  const [filter,        setFilter]        = useState("all");
+  const [modalOpen,     setModalOpen]     = useState(false);
+  const [selectedLead,  setSelectedLead]  = useState<OutreachLead | null>(null);
+  const [launching,     setLaunching]     = useState(false);
+  const [search,        setSearch]        = useState("");
+  const [outreachResult, setOutreachResult] = useState<OutreachResult | null>(null);
+
+  // ── Manual test row ──────────────────────────────────────────────
+  const [testPhone,     setTestPhone]     = useState("");
+  const [testEmail,     setTestEmail]     = useState("");
+  const [testLinkedin,  setTestLinkedin]  = useState("");
+  const [testName,      setTestName]      = useState("Test Partner");
+  const [testLaunching, setTestLaunching] = useState(false);
 
   const fetchLeads = async () => {
     setLoading(true);
@@ -208,12 +429,10 @@ export default function OutreachPage() {
         });
         const data = await res.json();
         toast.dismiss(tid);
-        const summary = (data.results || []).map((r: any) => {
-          const st  = r.result?.status ?? "unknown";
-          const ico = st.includes("sent") || st.includes("found") ? "✅" : "⏭️";
-          return `${ico} ${r.channel}: ${st}`;
-        }).join("  |  ");
-        toast.success(`Outreach launched for ${partnerName}`, { description: summary, duration: 6000 });
+        toast.success(`Outreach launched for ${partnerName}`);
+        setModalOpen(false);
+        // Show result panel with sentiment
+        setOutreachResult(data as OutreachResult);
       } else {
         for (const lead of filteredLeads) {
           await fetch(`${API_BASE}/api/outreach/launch`, {
@@ -224,13 +443,53 @@ export default function OutreachPage() {
         }
         toast.dismiss(tid);
         toast.success(`Bulk outreach launched for ${filteredLeads.length} leads`);
+        setModalOpen(false);
       }
-      setModalOpen(false);
       fetchLeads();
     } catch {
       toast.error("Outreach launch failed", { id: tid });
     } finally {
       setLaunching(false);
+    }
+  };
+
+  const handleTestLaunch = async () => {
+    if (!testPhone && !testEmail && !testLinkedin) {
+      toast.error("Enter at least one contact field to test");
+      return;
+    }
+    setTestLaunching(true);
+    const tid = "test-launch";
+    toast.loading("Launching test outreach…", { id: tid });
+    const chans: string[] = [];
+    if (testPhone)    chans.push("whatsapp");
+    if (testPhone)    chans.push("voice");
+    if (testEmail)    chans.push("email");
+    if (testLinkedin) chans.push("linkedin");
+    try {
+      const res  = await fetch(`${API_BASE}/api/outreach/launch`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({
+          partner_name:   testName,
+          channels:       chans,
+          custom_message: "",
+          test_override: {
+            phone_number:     testPhone,
+            email_id:         testEmail,
+            linkedin_profile: testLinkedin,
+          },
+        }),
+      });
+      const data = await res.json();
+      toast.dismiss(tid);
+      toast.success("Test outreach sent");
+      // Show result panel with sentiment
+      setOutreachResult(data as OutreachResult);
+    } catch {
+      toast.error("Test launch failed", { id: tid });
+    } finally {
+      setTestLaunching(false);
     }
   };
 
@@ -240,6 +499,7 @@ export default function OutreachPage() {
       email:     <Mail size={14} className="text-amber-400" />,
       linkedin:  <Link2 size={14} className="text-blue-400" />,
       instagram: <FaInstagram size={14} className="text-pink-400" />,
+      voice:     <Phone size={14} className="text-violet-400" />,
     };
     return m[ch?.toLowerCase()] || <Send size={14} />;
   };
@@ -265,6 +525,14 @@ export default function OutreachPage() {
 
   return (
     <>
+      {/* Result panel with sentiment */}
+      {outreachResult && (
+        <OutreachResultPanel
+          result={outreachResult}
+          onClose={() => setOutreachResult(null)}
+        />
+      )}
+
       {modalOpen && (
         <ChannelModal
           lead={selectedLead}
@@ -352,6 +620,49 @@ export default function OutreachPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
+                {/* ── Manual test row ── */}
+                <tr className="bg-amber-500/5 border-b-2 border-amber-500/30">
+                  <td className="px-4 py-3">
+                    <input
+                      value={testName}
+                      onChange={e => setTestName(e.target.value)}
+                      placeholder="Test Partner Name"
+                      className="bg-background border border-amber-500/40 rounded px-2 py-1 text-xs w-40 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                    />
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="bg-amber-500/20 text-amber-400 text-[10px] px-1.5 py-0.5 rounded uppercase font-bold">TEST</span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex flex-col gap-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <MessageSquare size={11} className="text-emerald-400 flex-shrink-0" />
+                        <input value={testPhone} onChange={e => setTestPhone(e.target.value)} placeholder="+971xxxxxxxxx" className="bg-background border border-border rounded px-2 py-0.5 text-xs w-32 focus:outline-none focus:ring-1 focus:ring-primary/50" />
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <Mail size={11} className="text-amber-400 flex-shrink-0" />
+                        <input value={testEmail} onChange={e => setTestEmail(e.target.value)} placeholder="you@email.com" className="bg-background border border-border rounded px-2 py-0.5 text-xs w-32 focus:outline-none focus:ring-1 focus:ring-primary/50" />
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <Link2 size={11} className="text-blue-400 flex-shrink-0" />
+                        <input value={testLinkedin} onChange={e => setTestLinkedin(e.target.value)} placeholder="linkedin.com/in/you" className="bg-background border border-border rounded px-2 py-0.5 text-xs w-32 focus:outline-none focus:ring-1 focus:ring-primary/50" />
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-xs text-amber-400 font-medium">Manual test</td>
+                  <td className="px-4 py-3 text-xs text-muted-foreground">—</td>
+                  <td className="px-4 py-3 text-right">
+                    <button
+                      onClick={handleTestLaunch}
+                      disabled={testLaunching || (!testPhone && !testEmail && !testLinkedin)}
+                      className="text-amber-400 text-xs font-bold hover:underline flex items-center gap-1 ml-auto disabled:opacity-40"
+                    >
+                      {testLaunching ? <Loader2 size={11} className="animate-spin" /> : <Zap size={11} />}
+                      {testLaunching ? "Sending…" : "Fire Test"}
+                    </button>
+                  </td>
+                </tr>
+                {/* ── End test row ── */}
                 {loading ? (
                   Array.from({ length: 6 }).map((_, i) => (
                     <tr key={i}>
@@ -374,9 +685,9 @@ export default function OutreachPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex gap-1.5">
-                        {lead.phone    && <MessageSquare size={13} className="text-emerald-400" title="WhatsApp" />}
-                        {lead.email    && <Mail size={13} className="text-amber-400" title="Email" />}
-                        {lead.linkedin_url && <Link2 size={13} className="text-blue-400" title="LinkedIn" />}
+                        {lead.phone        && <span title="WhatsApp"><MessageSquare size={13} className="text-emerald-400" /></span>}
+                        {lead.email        && <span title="Email"><Mail size={13} className="text-amber-400" /></span>}
+                        {lead.linkedin_url && <span title="LinkedIn"><Link2 size={13} className="text-blue-400" /></span>}
                       </div>
                     </td>
                     <td className="px-4 py-3">

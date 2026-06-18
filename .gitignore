@@ -1,52 +1,39 @@
-# .gitignore — GTM UAE Partner Pipeline
-
-# ── Environment / secrets ─────────────────────────────────────────────────────
-.env
-.env.local
-.env*.local
-
-# ── Frontend (Next.js) ───────────────────────────────────────────────────────
-frontend/.next/
-frontend/node_modules/
-node_modules/
-
-# ── Python ────────────────────────────────────────────────────────────────────
+# Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
-dist/
-build/
-.eggs/
-*.egg
-.venv/
-venv/
-env/
+*.pyc
+*.pyo
 
-# ── Data files (keep out of version control) ──────────────────────────────────
+# Virtual Environment
+venv/
+.venv/
+
+# Environment Variables
+.env
+.env.*
+
+# Excel Files (Confidential)
 *.xlsx
 *.xls
-*.csv
-data/
+*.xlsm
 
-# ── Docker ────────────────────────────────────────────────────────────────────
-# (docker-compose.yml and Dockerfile ARE committed — only ignore local overrides)
-docker-compose.override.yml
+# Databases
+*.db
+*.sqlite
+*.sqlite3
 
-# ── IDE / OS ──────────────────────────────────────────────────────────────────
-.idea/
+# VS Code
 .vscode/
-*.DS_Store
+
+# Logs
+*.log
+
+# OS Files
+.DS_Store
 Thumbs.db
 
-# ── Logs ─────────────────────────────────────────────────────────────────────
-*.log
-logs/
+# Next.js
+frontend/node_modules/
+frontend/.next/
 
-# ── Pytest / coverage ────────────────────────────────────────────────────────
-.pytest_cache/
-.coverage
-htmlcov/
-
-GTM_UAE_Solution_Documentation.md
-GTM UAE_ Track 1 & 2 Db.xlsx
+# Confidential documents
+*.docx

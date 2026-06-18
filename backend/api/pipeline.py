@@ -280,13 +280,36 @@ async def run_pipeline(req: PipelineRunRequest):
 
 @router.get("/categories")
 async def get_categories():
-    """Return distinct category values from the partners table for autocomplete."""
+    """
+    Return individual subcategory tags for pipeline autocomplete.
+    Uses the subcategory_tags array column — each tag is a clean individual value.
+    Falls back to raw subcategories ILIKE search if tags not populated.
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
+        # Get individual tags from the array column
         rows = await conn.fetch(
-            "SELECT DISTINCT category FROM partners WHERE category IS NOT NULL ORDER BY category"
+            """
+            SELECT DISTINCT TRIM(tag) AS tag
+            FROM partners,
+                 UNNEST(subcategory_tags) AS tag
+            WHERE tag IS NOT NULL
+              AND TRIM(tag) != ''
+            ORDER BY tag
+            """
         )
-    return {"categories": [r["category"] for r in rows if r["category"]]}
+    tags = [r["tag"] for r in rows if r["tag"]]
+
+    # Fallback — if tags not populated yet, return raw subcategories
+    if not tags:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT DISTINCT category FROM partners WHERE category IS NOT NULL ORDER BY category"
+            )
+        tags = [r["category"] for r in rows if r["category"]]
+
+    return {"categories": tags}
 
 
 @router.get("/status")

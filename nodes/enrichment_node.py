@@ -55,6 +55,7 @@ from enrichment_sources.hunter import query_hunter
 from enrichment_sources.linkedin_company_employees import query_linkedin_employees
 from enrichment_sources.linkedin_sales_nav import query_linkedin
 from enrichment_sources.linkedin_url_finder import find_company_linkedin_url
+from enrichment_sources.website_scraper import scrape_website
 from state import GraphState
 
 logger = logging.getLogger(__name__)
@@ -264,6 +265,44 @@ async def _enrich_one_partner_inner(
         if resolved_value is None:
             enriched[field] = None  # explicit None — all sources exhausted
 
+    # ------------------------------------------------------------------
+    # Priority 6: Website Scraper fallback
+    # Runs only for fields still missing after the full chain.
+    # Domain comes from Hunter's result — no CRM website URL needed.
+    # ------------------------------------------------------------------
+    still_missing = [f for f in fields_needed if not _is_present(enriched.get(f))]
+
+    if still_missing:
+        domain = (
+            hunter_res.get("domain")
+            or apollo_res.get("org_domain")
+            or partner.get("website", "")
+        )
+        if domain:
+            logger.info(
+                "%s  → [%s] Website scraper fallback for fields=%s domain=%r",
+                prefix, business_name, still_missing, domain,
+            )
+            try:
+                scraped = await scrape_website(domain, still_missing)
+                for field in still_missing:
+                    if _is_present(scraped.get(field)):
+                        enriched[field] = scraped[field]
+                        resolved_fields[field] = "website_scraper"
+                        logger.info(
+                            "%s  → [%s] website_scraper filled %r from %r",
+                            prefix, business_name, field, scraped.get("scraped_from"),
+                        )
+            except Exception as exc:
+                logger.warning(
+                    "%s  → [%s] Website scraper failed: %s", prefix, business_name, exc
+                )
+        else:
+            logger.info(
+                "%s  → [%s] Website scraper skipped — no domain available.",
+                prefix, business_name,
+            )
+
     elapsed = time.monotonic() - t0
     if resolved_fields:
         logger.info(
@@ -325,4 +364,50 @@ async def enrichment_node(state: GraphState) -> dict:
         run_id, total, elapsed, filled, total,
     )
 
+    # Write enriched contact fields back to Supabase
+    await _write_enriched_to_db(list(enriched_partners), run_id=run_id)
+
     return {"enriched_partners": list(enriched_partners)}
+
+# ---------------------------------------------------------------------------
+# DB write-back helper
+# ---------------------------------------------------------------------------
+
+async def _write_enriched_to_db(enriched_partners: list, run_id: str = "") -> None:
+    """
+    Write enriched contact fields back to the partners table in Supabase.
+    Only updates phone_number, email_id, linkedin_profile, contact_name,
+    contact_headline — never overwrites non-contact fields.
+    """
+    from db.connection import get_pool
+
+    prefix = f"[{run_id}] " if run_id else ""
+    if not enriched_partners:
+        return
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            for partner in enriched_partners:
+                name = partner.get("partner_name", "")
+                if not name:
+                    continue
+                await conn.execute(
+                    """
+                    UPDATE partners SET
+                        phone_number     = COALESCE(NULLIF($1, ''), phone_number),
+                        email_id         = COALESCE(NULLIF($2, ''), email_id),
+                        linkedin_profile = COALESCE(NULLIF($3, ''), linkedin_profile)
+                    WHERE partner_name = $4
+                    """,
+                    partner.get("phone_number") or "",
+                    partner.get("email_id") or "",
+                    partner.get("linkedin_profile") or "",
+                    name,
+                )
+        logger.info(
+            "%sDB write-back: updated %d partners in Supabase.",
+            prefix, len(enriched_partners),
+        )
+    except Exception as exc:
+        logger.error("%sDB write-back failed: %s", prefix, exc)

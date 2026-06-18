@@ -33,6 +33,7 @@ interface Partner {
   partner_name: string;
   category: string;
   subcategories: string;
+  subcategory_tags: string[] | null;
   website: string;
   region: string;
   phone_number: string | null;
@@ -83,8 +84,19 @@ export default function PipelineRunnerPage() {
   }, []);
 
   const filteredSuggestions = category.length > 0
-    ? categories.filter(c => c.toLowerCase().includes(category.toLowerCase())).slice(0, 8)
-    : categories.slice(0, 8);
+    ? categories
+        .filter(c => c.toLowerCase().includes(category.toLowerCase()))
+        .sort((a, b) => {
+          // Exact match first, then starts-with, then contains
+          const al = a.toLowerCase(), bl = b.toLowerCase(), q = category.toLowerCase();
+          if (al === q) return -1;
+          if (bl === q) return 1;
+          if (al.startsWith(q) && !bl.startsWith(q)) return -1;
+          if (bl.startsWith(q) && !al.startsWith(q)) return 1;
+          return a.localeCompare(b);
+        })
+        .slice(0, 10)
+    : categories.slice(0, 10);
 
   // ── Update a single stage ──────────────────────────────────────
   const updateStage = useCallback((id: string, patch: Partial<StageState>) => {
@@ -239,6 +251,7 @@ export default function PipelineRunnerPage() {
                   <button
                     key={s}
                     onMouseDown={() => { setCategory(s); setShowSuggest(false); }}
+                    title={s}
                     className="w-full text-left px-4 py-2.5 text-sm hover:bg-primary/10 hover:text-primary transition-colors"
                   >
                     {s}

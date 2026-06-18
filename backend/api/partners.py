@@ -53,9 +53,12 @@ async def list_partners(
         params.append(status)
         idx += 1
     if category:
-        conditions.append(f"category ILIKE ${idx}")
+        # Match against individual subcategory tags (exact) or category name (fuzzy)
+        cat_idx = idx
+        conditions.append(f"(${cat_idx} = ANY(subcategory_tags) OR category ILIKE ${cat_idx+1})")
+        params.append(category)
         params.append(f"%{category}%")
-        idx += 1
+        idx += 2
     if region:
         conditions.append(f"region ILIKE ${idx}")
         params.append(f"%{region}%")
@@ -79,7 +82,7 @@ async def list_partners(
         rows = await conn.fetch(
             f"""
             SELECT id, partner_name, digitisation, category, subcategories,
-                   website, product_count, status, integrated, region,
+                   subcategory_tags, website, product_count, status, integrated, region,
                    phone_number, email_id, linkedin_profile, sheet_source
             FROM partners
             {where_clause}
